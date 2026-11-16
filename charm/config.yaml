@@ -30,9 +30,9 @@ options:
   vault-approle-secret:
     type: secret
     description: Juju secret URI containing role-id and secret-id keys.
-  hmac-credentials-secret:
+  api-tokens-secret:
     type: secret
-    description: Juju secret URI containing a credentials JSON object.
+    description: Juju secret URI containing a credentials JSON map of repositories to bearer tokens.
   reconcile-interval:
     type: int
     default: 10
@@ -41,10 +41,6 @@ options:
     type: int
     default: 65536
     description: Maximum deployment API request body size.
-  signature-max-age:
-    type: int
-    default: 300
-    description: Maximum HMAC signature age in seconds.
   rate-limit-per-minute:
     type: int
     default: 60

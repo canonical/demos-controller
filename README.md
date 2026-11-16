@@ -20,20 +20,39 @@ commit metadata, and an immutable repository-scoped image digest.
 
 ## Controller API
 
-The workload serves the signed deployment API on port 8080, persists non-secret
-desired state in SQLite, resolves project configuration through Vault AppRole
-and KV v2, reconciles resources with Lightkube, and proxies active demo hosts.
+The workload serves the authenticated deployment API on port 8080, persists
+non-secret desired state in SQLite, resolves project configuration through Vault
+AppRole and KV v2, reconciles resources with Lightkube, and proxies active demo
+hosts.
 
-Requests provide `X-Demos-Repository`, `X-Demos-Timestamp`, `X-Demos-Nonce`,
-and `X-Demos-Signature`. The signature is lowercase hex HMAC-SHA256 over:
+Every deploy, destroy, and status request provides:
 
-```text
-METHOD\nPATH\nTIMESTAMP\nNONCE\nRAW_BODY
+```http
+Authorization: Bearer <repository-token>
+X-Demos-Repository: canonical/example-repository
 ```
 
-`POST /api/v1/deploy` and `/api/v1/destroy` require the nonce to equal the
-payload delivery ID. Status is available at
-`GET /api/v1/demos/{owner}/{repository}/{pr}`. Every API request is signed.
+Configure `API_TOKENS` as a JSON map of lowercase `owner/repository` identities
+to distinct random bearer tokens. A token authorizes only its matching
+repository, including the repository in a deployment image reference. Missing
+or invalid credentials return HTTP 401 with a Bearer authentication challenge;
+cross-repository operations return HTTP 403. Health probes remain unauthenticated.
+
+`POST /api/v1/deploy` and `/api/v1/destroy` retain the payload's `delivery_id`.
+An identical retry of the currently stored delivery is idempotent; reusing that
+ID with a different body for the same demo returns HTTP 409. This is operation
+idempotency, not protection against a stolen token or indefinite replay of old
+deliveries. Status is available at
+`GET /api/v1/demos/{owner}/{repository}/{pr}`.
+
+Expose the API over HTTPS only and never log Authorization headers. The supplied
+client requires HTTPS with normal certificate validation, refuses redirects,
+and omits HTTP error bodies that could echo credentials. Rotate compromised
+tokens in Juju and GitHub together. Vault AppRole authentication is unchanged.
+
+HMAC signatures, timestamps, and nonce headers are no longer accepted as
+authentication. The old SQLite nonce table is retained for database compatibility
+but is no longer used.
 
 Vault records at `<mount>/data/<base>/v1/<owner>/<repository>` use schema
 version 1 and distinguish `environment` from `secrets`. Secret values are never
@@ -43,7 +62,8 @@ Images must use immutable digests beneath the authenticated repository path.
 The registry defaults to `ghcr.io` and can be overridden with `IMAGE_REGISTRY`
 for isolated development registries.
 
-See [`charm/README.md`](charm/README.md) for operator details.
+See [`charm/README.md`](charm/README.md) for operator details and the
+[bearer-token migration guide](docs/bearer-token-migration.md) before upgrading.
 
 ## Documentation
 

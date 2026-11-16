@@ -26,7 +26,7 @@ GitHub Actions
   - rockcraft pack
   - push to GHCR
   - resolve immutable digest
-  - sign API request
+  - authenticate API request with bearer token
        |
        v
 HAProxy route
@@ -38,8 +38,8 @@ Controller NodePort
        |
        v
 FastAPI controller
-  - HMAC authentication
-  - replay/rate protection
+  - repository-scoped bearer authentication
+  - per-demo idempotency and rate limiting
   - SQLite desired state
   - Vault AppRole/KV client
   - reconciliation loop
@@ -62,29 +62,27 @@ and secrets          ConfigMap / Secret
 4. `rockcraft.skopeo` pushes a PR-specific tag to
    `ghcr.io/<owner>/<repository>`.
 5. The workflow inspects the remote image and obtains its `sha256` digest.
-6. The standard-library client signs `POST /api/v1/deploy` with the
-   repository-specific HMAC key.
+6. The standard-library client sends `POST /api/v1/deploy` over HTTPS with
+   `Authorization: Bearer <repository-token>` and `X-Demos-Repository`.
 7. The API validates:
-   - the credential repository;
-   - timestamp age and signature;
-   - nonce/replay fingerprint;
+   - the repository-specific bearer token;
    - strict request schema;
    - exact repository identity;
    - configured image registry;
    - immutable digest format;
-   - nonce equality with `delivery_id`.
+   - the current per-demo delivery ID and request hash for safe retries.
 8. SQLite records the desired deployment and returns `202 Accepted`.
 9. The reconciliation loop reads the repository's Vault KV v2 record.
 10. The controller validates configuration and the optional Vault-authorized
     image namespace.
 11. It applies a Deployment, ClusterIP Service, and optional ConfigMap/Secret.
-12. The workflow polls signed status requests until the demo is ready or fails.
+12. The workflow polls authenticated status until the demo is ready or fails.
 13. The workflow creates or updates one persistent pull-request comment.
 
 ## Destroy flow
 
 1. Pull-request close/merge invokes `.github/workflows/demo-cleanup.yaml`.
-2. The workflow signs `POST /api/v1/destroy`.
+2. The workflow authenticates `POST /api/v1/destroy` with its bearer token.
 3. SQLite changes the desired state to absent.
 4. The reconciler deletes the Deployment, Service, ConfigMap, and Secret.
 5. The record is removed after Kubernetes deletion succeeds.
@@ -139,8 +137,11 @@ SQLite uses WAL mode and persists:
 - delivery ID and request hash;
 - lifecycle state and status message;
 - Vault version and workload port;
-- creation, update, and expiry times;
-- nonce fingerprints for replay handling.
+- creation, update, and expiry times.
+
+The legacy nonce table remains for database compatibility but is unused.
+Delivery IDs provide per-demo operation idempotency, not permanent replay
+protection. Bearer tokens must be rotated if compromised.
 
 Application secret values are not persisted in SQLite.
 
@@ -169,7 +170,7 @@ Important failure behavior:
 
 | Boundary | Control |
 |---|---|
-| GitHub workflow to controller | Repository-specific HMAC, timestamp, nonce, replay fingerprint |
+| GitHub workflow to controller | Repository-specific bearer token over HTTPS, repository isolation |
 | Repository to image | Exact lowercase repository namespace and immutable digest |
 | Vault authorization | AppRole policy plus optional `image_namespace` |
 | Controller to Kubernetes | Trusted charm and ownership labels |

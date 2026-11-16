@@ -52,14 +52,24 @@ class DemosControllerCharm(ops.CharmBase):
 
     def _environment(self) -> dict[str, str] | None:
         approle = self._secret_content("vault-approle-secret")
-        hmac_secret = self._secret_content("hmac-credentials-secret")
+        token_secret = self._secret_content("api-tokens-secret")
         if not approle or not {"role-id", "secret-id"} <= approle.keys():
             return None
-        if not hmac_secret or "credentials" not in hmac_secret:
+        if not token_secret or "credentials" not in token_secret:
             return None
         try:
-            credentials = json.loads(hmac_secret["credentials"])
-            if not isinstance(credentials, dict) or not credentials:
+            credentials = json.loads(token_secret["credentials"])
+            if (
+                not isinstance(credentials, dict)
+                or not credentials
+                or not all(
+                    isinstance(repository, str)
+                    and re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", repository)
+                    and isinstance(token, str)
+                    and re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", token)
+                    for repository, token in credentials.items()
+                )
+            ):
                 return None
         except (TypeError, json.JSONDecodeError):
             return None
@@ -77,10 +87,9 @@ class DemosControllerCharm(ops.CharmBase):
             "VAULT_BASE_PATH": str(self.config["vault-base-path"]),
             "VAULT_ROLE_ID": approle["role-id"],
             "VAULT_SECRET_ID": approle["secret-id"],
-            "HMAC_CREDENTIALS": json.dumps(credentials, separators=(",", ":"), sort_keys=True),
+            "API_TOKENS": json.dumps(credentials, separators=(",", ":"), sort_keys=True),
             "RECONCILE_INTERVAL": str(self.config["reconcile-interval"]),
             "REQUEST_MAX_BYTES": str(self.config["request-max-bytes"]),
-            "SIGNATURE_MAX_AGE": str(self.config["signature-max-age"]),
             "RATE_LIMIT_PER_MINUTE": str(self.config["rate-limit-per-minute"]),
         }
         for juju_name, standard_name in (
@@ -99,7 +108,7 @@ class DemosControllerCharm(ops.CharmBase):
     def _configure(self, _: ops.EventBase) -> None:
         environment = self._environment()
         if not environment:
-            self.unit.status = ops.BlockedStatus("configure Vault AppRole and HMAC secrets")
+            self.unit.status = ops.BlockedStatus("configure Vault AppRole and API token secrets")
             return
         if not self.container.can_connect():
             self.unit.status = ops.WaitingStatus("waiting for controller container")
@@ -266,7 +275,7 @@ class DemosControllerCharm(ops.CharmBase):
     def _update_status(self, _: ops.UpdateStatusEvent) -> None:
         environment = self._environment()
         if not environment:
-            self.unit.status = ops.BlockedStatus("configure Vault AppRole and HMAC secrets")
+            self.unit.status = ops.BlockedStatus("configure Vault AppRole and API token secrets")
         elif not self.container.can_connect():
             self.unit.status = ops.WaitingStatus("waiting for controller container")
         else:

@@ -18,9 +18,7 @@ def build_app():
     settings = Settings.from_env()
     store = Store(settings.database_path, settings.hostname_suffix)
     authenticator = Authenticator(
-        settings.hmac_credentials,
-        store,
-        settings.signature_max_age_seconds,
+        settings.api_tokens,
         settings.rate_limit_per_minute,
     )
     vault = VaultClient(

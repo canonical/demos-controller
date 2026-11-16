@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,20 +20,29 @@ class Settings:
     vault_base_path: str
     vault_role_id: str
     vault_secret_id: str
-    hmac_credentials: dict[str, str]
+    api_tokens: dict[str, str]
     reconcile_interval_seconds: float
     request_max_bytes: int
-    signature_max_age_seconds: int
     rate_limit_per_minute: int
     proxy_timeout_seconds: float
 
     @classmethod
     def from_env(cls) -> Settings:
-        credentials = json.loads(os.getenv("HMAC_CREDENTIALS", "{}"))
-        if not isinstance(credentials, dict) or not all(
-            isinstance(key, str) and isinstance(value, str) for key, value in credentials.items()
+        credentials = json.loads(os.getenv("API_TOKENS", "{}"))
+        if (
+            not isinstance(credentials, dict)
+            or not credentials
+            or not all(
+                isinstance(key, str)
+                and re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", key)
+                and isinstance(value, str)
+                and re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", value)
+                for key, value in credentials.items()
+            )
         ):
-            raise ValueError("HMAC_CREDENTIALS must be a JSON string map")
+            raise ValueError(
+                "API_TOKENS must map lowercase repositories to non-empty bearer tokens"
+            )
         return cls(
             database_path=Path(os.getenv("DATABASE_PATH", "/data/controller.db")),
             namespace=os.getenv("KUBERNETES_NAMESPACE", "default"),
@@ -45,10 +55,9 @@ class Settings:
             vault_base_path=os.getenv("VAULT_BASE_PATH", "demos").strip("/"),
             vault_role_id=os.getenv("VAULT_ROLE_ID", ""),
             vault_secret_id=os.getenv("VAULT_SECRET_ID", ""),
-            hmac_credentials=credentials,
+            api_tokens=credentials,
             reconcile_interval_seconds=float(os.getenv("RECONCILE_INTERVAL", "10")),
             request_max_bytes=int(os.getenv("REQUEST_MAX_BYTES", "65536")),
-            signature_max_age_seconds=int(os.getenv("SIGNATURE_MAX_AGE", "300")),
             rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "60")),
             proxy_timeout_seconds=float(os.getenv("PROXY_TIMEOUT", "30")),
         )

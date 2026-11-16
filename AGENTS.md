@@ -6,7 +6,7 @@ Vault records.
 
 ## Non-negotiable rules
 
-- Never commit, print, or document Vault AppRole credentials, HMAC keys, Juju
+- Never commit, print, or document Vault AppRole credentials, bearer tokens, Juju
   secret contents, GitHub tokens, or Vault tokens.
 - Do not change external systems unless the user explicitly authorizes it.
   Local-only requests mean no GitHub repository, GitHub secret, Vault,
@@ -33,7 +33,7 @@ Vault records.
 - `.github/workflows/publish-charm.yaml`: main-branch Charmhub publisher using
   the SHA-pinned `canonical/webteam-devops` reusable workflow; it does not
   deploy the charm.
-- `.github/scripts/demo_api.py`: dependency-free signed API client.
+- `.github/scripts/demo_api.py`: dependency-free bearer-authenticated API client.
 - `tests/`: controller tests, fake Vault, and demo workload fixture.
 - `docs/architecture.md`: end-to-end architecture and data flow.
 - `docs/configuration.md`: controller, Juju secret, and Vault schemas.
@@ -46,9 +46,9 @@ Vault records.
 1. GitHub Actions builds the target repository's rock and publishes it to GHCR.
 2. The workflow resolves the tag to a digest before calling the controller.
 3. Every controller API request is authenticated with a repository-specific
-   HMAC credential.
+   bearer token over HTTPS.
 4. Repository configuration and application secrets come from Vault KV v2.
-5. The controller stores desired state and replay fingerprints in SQLite, but
+5. The controller stores desired state and per-demo delivery hashes in SQLite, but
    never stores application secret values there.
 6. The controller owns plain Kubernetes Deployments, Services, ConfigMaps, and
    Secrets. Demo workloads are not Juju applications.
@@ -97,8 +97,9 @@ ignored and must not be committed.
 
 ## Change guidance
 
-- API/authentication changes require tests for valid signatures, stale
-  signatures, replay behavior, idempotent retries, and repository isolation.
+- API/authentication changes require tests for valid and invalid bearer tokens,
+  malformed authorization headers, idempotent retries, delivery conflicts, and
+  repository isolation. Never log Authorization headers.
 - Vault schema changes require strict model validation and migration/versioning
   consideration. Unknown fields currently fail closed.
 - Kubernetes changes must keep the non-root pod policy, dropped capabilities,
@@ -119,8 +120,9 @@ ignored and must not be committed.
 - Vault lookup errors intentionally avoid returning secret material, but some
   validation failures are summarized generically. Inspect workload logs for
   the exact failure class.
-- Rate limiting is in-memory per controller process; replay protection and
-  desired state are persistent in SQLite.
+- Rate limiting is in-memory per controller process. Desired state and current
+  per-demo delivery hashes persist in SQLite. Delivery idempotency is not
+  protection against a stolen bearer token or indefinite replay of old requests.
 - The reverse proxy buffers request and response bodies. It is suitable for
   review applications, not large streaming or websocket workloads.
 - Historical production names and verification evidence are recorded in

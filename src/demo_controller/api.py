@@ -68,7 +68,7 @@ def create_app(
     # FastAPI's auto-registered /docs, /redoc, and /openapi.json would match
     # before the catch-all proxy route and hijack the same paths on every demo
     # hostname (and leak the API schema publicly). The controller is an
-    # HMAC-authenticated machine API: disable the interactive docs entirely.
+    # Bearer-authenticated machine API: disable the interactive docs entirely.
     app = FastAPI(
         title="Canonical demos controller",
         version="1.0",
@@ -158,8 +158,6 @@ def create_app(
             f"{settings.image_registry}/{payload.repository}@sha256:"
         ):
             raise HTTPException(403, "image registry is not authorized")
-        if request.headers.get("X-Demos-Nonce") != payload.delivery_id:
-            raise HTTPException(400, "nonce must equal delivery_id")
         try:
             record, _ = store.upsert_deploy(payload, request_hash(body))
         except ValueError as error:
@@ -177,8 +175,6 @@ def create_app(
             raise HTTPException(422, "invalid destroy request") from error
         if payload.repository != repository:
             raise HTTPException(403, "credential does not authorize repository")
-        if request.headers.get("X-Demos-Nonce") != payload.delivery_id:
-            raise HTTPException(400, "nonce must equal delivery_id")
         try:
             record = store.request_destroy(
                 payload.repository, payload.pr, payload.delivery_id, request_hash(body)

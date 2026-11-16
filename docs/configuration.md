@@ -7,7 +7,7 @@ Configuration is split deliberately:
 | Layer | Contains | Storage |
 |---|---|---|
 | Charm config | Hostnames, Vault location/path, limits, registry | Juju application config |
-| Bootstrap secrets | Vault AppRole and repository HMAC keys | Juju user secrets |
+| Bootstrap secrets | Vault AppRole and repository bearer tokens | Juju user secrets |
 | Project config | Port, health path, resources, plain environment | Vault KV v2 |
 | Project secrets | Application secret environment values | Vault KV v2, projected to Kubernetes Secret |
 | Desired state | Repository, PR, image, state, expiry | SQLite |
@@ -29,10 +29,9 @@ Important options:
 - `vault-kv-mount`: KV v2 mount name, not an API path.
 - `vault-base-path`: base beneath the KV mount.
 - `vault-approle-secret`: Juju secret URI containing `role-id` and `secret-id`.
-- `hmac-credentials-secret`: Juju secret URI containing a JSON credential map.
+- `api-tokens-secret`: Juju secret URI containing a JSON credential map.
 - `reconcile-interval`: desired-state loop period.
 - `request-max-bytes`: deploy/destroy API body limit.
-- `signature-max-age`: accepted clock skew/signature age.
 - `rate-limit-per-minute`: authenticated requests per repository per process.
 
 The charm converts these options into controller environment variables and
@@ -47,7 +46,7 @@ role-id=<redacted>
 secret-id=<redacted>
 ```
 
-HMAC credentials secret:
+Bearer-token credentials secret:
 
 ```json
 {
@@ -56,7 +55,7 @@ HMAC credentials secret:
 ```
 
 The inner value is a JSON object mapping lowercase `owner/repository` names to
-HMAC keys. Never include real values in documentation, tests, commits, shell
+Bearer tokens. Never include real values in documentation, tests, commits, shell
 history intended for sharing, or issue comments.
 
 ## Vault path
@@ -146,21 +145,23 @@ three days after the request unless pull-request cleanup deletes it first.
 
 A target repository needs:
 
-- a GitHub Actions secret containing its repository-specific HMAC key;
+- a GitHub Actions secret containing its repository-specific bearer token;
 - an API URL variable or workflow input;
 - pull-request workflows that call the reusable deploy and cleanup workflows;
 - a `rockcraft.yaml` at the configured `rockcraft-path`;
 - a matching Vault record.
 
-During production verification the conventional names were:
+Configure these GitHub Actions values:
 
 ```text
-Secret:   DEMOS_HMAC_KEY
+Secret:   DEMOS_API_TOKEN
 Variable: DEMOS_API_URL
 ```
 
-The HMAC key in GitHub and the matching entry in the Juju HMAC secret must be
-identical. Rotate them together.
+The bearer token in GitHub and its matching entry in the Juju token secret must be
+identical. Rotate them together. Use a distinct random token of at least 32 bytes
+per repository. The workload reads the credential map from `API_TOKENS`.
+See [the migration guide](bearer-token-migration.md) before upgrading HMAC callers.
 
 ## Safe Vault change procedure
 

@@ -1,6 +1,6 @@
 # ADR 0004: Authenticate workflows with repository HMAC credentials
 
-- Status: Accepted
+- Status: Superseded by [ADR 0009](0009-bearer-workflow-authentication.md)
 - Date: 2025
 
 ## Context

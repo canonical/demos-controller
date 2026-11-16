@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import sqlite3
 import time
 from pathlib import Path
@@ -45,14 +43,13 @@ def controller(tmp_path: Path):
         vault_base_path="demos",
         vault_role_id="test-role",
         vault_secret_id="test-secret",
-        hmac_credentials={"canonical/example": "test-key"},
+        api_tokens={"canonical/example": "test-key"},
         reconcile_interval_seconds=0.01,
         request_max_bytes=65536,
-        signature_max_age_seconds=300,
         rate_limit_per_minute=60,
         proxy_timeout_seconds=3,
     )
-    auth = Authenticator(settings.hmac_credentials, store, 300, 60)
+    auth = Authenticator(settings.api_tokens, 60)
     app = create_app(settings, store, auth, loop)
     return app, store, loop, vault, kubernetes
 
@@ -179,7 +176,7 @@ async def test_proxy_client_owned_by_caller_is_not_closed(controller) -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _: httpx.Response(200))
     ) as proxy:
-        auth = Authenticator({}, store, 300, 60)
+        auth = Authenticator({}, 60)
         application = create_app(MagicMock(spec=Settings), store, auth, loop, proxy_client=proxy)
         with TestClient(application) as client:
             assert client.get("/readyz").status_code == 200
@@ -209,7 +206,7 @@ async def test_proxy_sends_public_hostname_as_upstream_host_header(controller) -
         settings.hostname_suffix = "demos.example"
         settings.namespace = "testing"
         settings.proxy_timeout_seconds = 3
-        auth = Authenticator({}, store, 300, 60)
+        auth = Authenticator({}, 60)
         application = create_app(settings, store, auth, loop, proxy_client=proxy)
         with TestClient(application) as client:
             response = client.get(
@@ -247,7 +244,7 @@ async def test_controller_docs_paths_are_proxied_to_the_demo(controller) -> None
         settings.hostname_suffix = "demos.example"
         settings.namespace = "testing"
         settings.proxy_timeout_seconds = 3
-        auth = Authenticator({}, store, 300, 60)
+        auth = Authenticator({}, 60)
         application = create_app(settings, store, auth, loop, proxy_client=proxy)
         with TestClient(application) as client:
             for path in ("/docs", "/redoc", "/openapi.json"):
@@ -275,7 +272,7 @@ async def test_unknown_demo_hostname_returns_empty_404(controller) -> None:
         settings.hostname_suffix = "demos.example"
         settings.namespace = "testing"
         settings.proxy_timeout_seconds = 3
-        auth = Authenticator({}, store, 300, 60)
+        auth = Authenticator({}, 60)
         application = create_app(settings, store, auth, loop, proxy_client=proxy)
         with TestClient(application) as client:
             for host in ("asdf.demos.example", "example-pr-1.demos.example"):
@@ -286,27 +283,26 @@ async def test_unknown_demo_hostname_returns_empty_404(controller) -> None:
 
 
 @pytest.mark.parametrize(
-    "repository, timestamp_offset, expected_status",
-    [("example", 0, 200), ("other", 0, 403), ("example", -301, 401), ("example", 301, 401)],
+    "repository, token, expected_status",
+    [
+        ("example", "test-key", 200),
+        ("other", "test-key", 403),
+        ("example", "wrong-token", 401),
+        ("example", "", 401),
+    ],
 )
-def test_authenticated_status_preserves_signature_and_repository_isolation(
-    controller, repository, timestamp_offset, expected_status
+def test_authenticated_status_preserves_token_and_repository_isolation(
+    controller, repository, token, expected_status
 ) -> None:
     app, store, _, _, _ = controller
     add_demo(store)
     path = f"/api/v1/demos/canonical/{repository}/1"
-    timestamp = str(int(time.time()) + timestamp_offset)
-    nonce = "status-request"
-    canonical = b"\n".join((b"GET", path.encode(), timestamp.encode(), nonce.encode(), b""))
-    signature = hmac.new(b"test-key", canonical, hashlib.sha256).hexdigest()
     with TestClient(app) as client:
         response = client.get(
             path,
             headers={
                 "x-demos-repository": "canonical/example",
-                "x-demos-timestamp": timestamp,
-                "x-demos-nonce": nonce,
-                "x-demos-signature": f"sha256={signature}",
+                "authorization": f"Bearer {token}",
             },
         )
         assert response.status_code == expected_status

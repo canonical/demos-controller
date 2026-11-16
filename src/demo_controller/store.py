@@ -89,34 +89,6 @@ class Store:
                     "ALTER TABLE nonces ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''"
                 )
 
-    def use_nonce(
-        self,
-        repository: str,
-        nonce: str,
-        request_fingerprint: str,
-        now: int,
-        max_age: int,
-    ) -> bool:
-        with self._lock, self._connection() as connection:
-            connection.execute("DELETE FROM nonces WHERE seen_at < ?", (now - max_age,))
-            existing = connection.execute(
-                "SELECT request_fingerprint FROM nonces WHERE repository=? AND nonce=?",
-                (repository, nonce),
-            ).fetchone()
-            if existing:
-                return existing["request_fingerprint"] == request_fingerprint
-            try:
-                connection.execute(
-                    """
-                    INSERT INTO nonces(repository, nonce, request_fingerprint, seen_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (repository, nonce, request_fingerprint, now),
-                )
-            except sqlite3.IntegrityError:
-                return False
-            return True
-
     def upsert_deploy(
         self,
         request: DeployRequest,

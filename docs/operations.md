@@ -71,7 +71,7 @@ unchanged.
 - Persistent `state` storage mounted at `/data`.
 - A `haproxy-route` relation to the external ingress offer.
 - A Vault AppRole Juju secret.
-- An HMAC credentials Juju secret.
+- A repository bearer-token Juju secret.
 - Network egress to Vault and any other required external services.
 
 The charm workload runs:
@@ -220,7 +220,7 @@ When Vault works but Kubernetes reconciliation reports `ProxyError` or 403:
 
 - Confirm `vault-approle-secret` is configured and granted to the application.
 - Confirm it contains `role-id` and `secret-id`.
-- Confirm `hmac-credentials-secret` is configured and granted.
+- Confirm `api-tokens-secret` is configured and granted.
 - Confirm its `credentials` field is valid, non-empty JSON.
 
 ### Charm says Kubernetes API access denied
@@ -301,11 +301,13 @@ actual backend before claiming the previous demo still works. Fix the failure;
 the reconciliation loop retries persisted desired state without requiring a new
 delivery.
 
-### API rejects a retry as replayed
+### API rejects a delivery retry
 
-A repeated nonce is accepted only when repository, method, path, nonce, and raw
-body match. The timestamp and signature may be refreshed. A nonce reused with a
-different body is rejected.
+An identical retry of the currently stored delivery ID for a demo is accepted.
+Reusing that ID with a different raw body returns HTTP 409. This is operation
+idempotency, not permanent replay protection. HMAC signatures, timestamps, and
+nonces are no longer used for authentication; send a repository bearer token
+over HTTPS. See [the migration guide](bearer-token-migration.md).
 
 ### Cleanup succeeds but GHCR image remains
 

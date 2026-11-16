@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
-import time
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,69 +16,83 @@ from demo_controller.settings import Settings
 from demo_controller.store import DEMO_LIFETIME_SECONDS, Store
 
 
-def signed_request(
-    path: str, body: bytes, nonce: str, key: str, timestamp: str | None = None
+def bearer_request(
+    authorization: str = "Bearer test-token",
+    repository: str = "canonical/example",
 ) -> Request:
-    timestamp = timestamp or str(int(time.time()))
-    canonical = b"\n".join((b"POST", path.encode(), timestamp.encode(), nonce.encode(), body))
-    signature = hmac.new(key.encode(), canonical, hashlib.sha256).hexdigest()
-    headers = [
-        (b"x-demos-repository", b"canonical/example"),
-        (b"x-demos-timestamp", timestamp.encode()),
-        (b"x-demos-nonce", nonce.encode()),
-        (b"x-demos-signature", f"sha256={signature}".encode()),
-    ]
-    sent = False
-
-    async def receive():
-        nonlocal sent
-        if sent:
-            return {"type": "http.request", "body": b"", "more_body": False}
-        sent = True
-        return {"type": "http.request", "body": body, "more_body": False}
-
     return Request(
-        {"type": "http", "method": "POST", "path": path, "headers": headers, "query_string": b""},
-        receive,
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/deploy",
+            "headers": [
+                (b"x-demos-repository", repository.encode()),
+                (b"authorization", authorization.encode()),
+            ],
+            "query_string": b"",
+        }
     )
 
 
-async def test_hmac_authentication_and_replay_protection(tmp_path: Path) -> None:
-    store = Store(tmp_path / "state.db", "demos.canonical.com")
-    auth = Authenticator({"canonical/example": "key"}, store, 300, 60)
-    body = b'{"repository":"canonical/example"}'
-    timestamp = str(int(time.time()))
-    request = signed_request("/api/v1/deploy", body, "delivery-123", "key", timestamp)
-    assert await auth.authenticate(request) == "canonical/example"
-    idempotent_retry = signed_request(
-        "/api/v1/deploy", body, "delivery-123", "key", str(int(timestamp) + 1)
+async def test_bearer_authentication() -> None:
+    auth = Authenticator({"canonical/example": "test-token"}, 60)
+    assert await auth.authenticate(bearer_request()) == "canonical/example"
+    assert (
+        await auth.authenticate(bearer_request("bearer test-token", "Canonical/Example"))
+        == "canonical/example"
     )
-    assert await auth.authenticate(idempotent_retry) == "canonical/example"
-    replay = signed_request(
-        "/api/v1/deploy",
-        b'{"repository":"canonical/other"}',
-        "delivery-123",
-        "key",
-        timestamp,
-    )
+
+
+@pytest.mark.parametrize(
+    ("authorization", "repository"),
+    [
+        ("", "canonical/example"),
+        ("Bearer", "canonical/example"),
+        ("Basic test-token", "canonical/example"),
+        ("Bearer ", "canonical/example"),
+        ("Bearer wrong-token", "canonical/example"),
+        ("Bearer  test-token", "canonical/example"),
+        ("Bearer test-token ", "canonical/example"),
+        ("Bearer tést-token", "canonical/example"),
+        ("Bearer test-token", ""),
+        ("Bearer test-token", "canonical/other"),
+    ],
+)
+async def test_invalid_bearer_credentials(authorization: str, repository: str) -> None:
+    auth = Authenticator({"canonical/example": "test-token"}, 60)
     with pytest.raises(HTTPException) as error:
-        await auth.authenticate(replay)
-    assert error.value.status_code == 409
-
-
-async def test_invalid_signature_does_not_consume_repository_rate_limit(
-    tmp_path: Path,
-) -> None:
-    store = Store(tmp_path / "state.db", "demos.canonical.com")
-    auth = Authenticator({"canonical/example": "key"}, store, 300, 1)
-    body = b'{"repository":"canonical/example"}'
-    invalid = signed_request("/api/v1/deploy", body, "invalid-request", "wrong-key")
-    with pytest.raises(HTTPException) as error:
-        await auth.authenticate(invalid)
+        await auth.authenticate(bearer_request(authorization, repository))
     assert error.value.status_code == 401
+    assert error.value.headers == {"WWW-Authenticate": "Bearer"}
 
-    valid = signed_request("/api/v1/deploy", body, "valid-request", "key")
-    assert await auth.authenticate(valid) == "canonical/example"
+
+async def test_invalid_token_does_not_consume_repository_rate_limit() -> None:
+    auth = Authenticator({"canonical/example": "test-token"}, 1)
+    with pytest.raises(HTTPException) as error:
+        await auth.authenticate(bearer_request("Bearer wrong-token"))
+    assert error.value.status_code == 401
+    assert await auth.authenticate(bearer_request()) == "canonical/example"
+    with pytest.raises(HTTPException) as error:
+        await auth.authenticate(bearer_request())
+    assert error.value.status_code == 429
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        {},
+        [],
+        {"canonical/example": ""},
+        {"Canonical/Example": "token"},
+        {"invalid": "token"},
+        {"canonical/example": 123},
+        {"canonical/example": "token with spaces"},
+    ],
+)
+def test_settings_reject_invalid_token_maps(monkeypatch, credentials) -> None:
+    monkeypatch.setenv("API_TOKENS", json.dumps(credentials))
+    with pytest.raises(ValueError, match="API_TOKENS"):
+        Settings.from_env()
 
 
 def test_store_is_idempotent_and_contains_no_project_secrets(tmp_path: Path) -> None:
@@ -97,6 +110,8 @@ def test_store_is_idempotent_and_contains_no_project_secrets(tmp_path: Path) -> 
     assert created is True
     assert changed is False
     assert first == second
+    reopened = Store(path, "demos.canonical.com")
+    assert reopened.upsert_deploy(request, "same-hash") == (first, False)
     assert first.expires_at == first.created_at + DEMO_LIFETIME_SECONDS
     assert b"application-secret-value" not in path.read_bytes()
 
@@ -136,9 +151,12 @@ def test_deploy_update_preserves_the_active_route_until_reconciled(tmp_path: Pat
     assert store.get_ready_by_hostname(store.status(pending).hostname) == pending
 
 
-def test_deploy_api_accepts_a_signed_request(tmp_path: Path) -> None:
-    store = Store(tmp_path / "state.db", "demos.canonical.com")
-    auth = Authenticator({"canonical/example": "key"}, store, 300, 60)
+@pytest.fixture
+def api_client(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("API_TOKENS", '{"canonical/example":"test-token"}')
+    settings = replace(Settings.from_env(), database_path=tmp_path / "state.db")
+    store = Store(settings.database_path, settings.hostname_suffix)
+    auth = Authenticator(settings.api_tokens, 60)
 
     class ReconciliationStub:
         async def run(self) -> None:
@@ -147,47 +165,103 @@ def test_deploy_api_accepts_a_signed_request(tmp_path: Path) -> None:
         def stop(self) -> None:
             return
 
-    settings = Settings(
-        database_path=tmp_path / "state.db",
-        namespace="testing",
-        hostname_suffix="demos.canonical.com",
-        controller_owner="controller",
-        image_registry="ghcr.io",
-        vault_address="https://vault.example",
-        vault_namespace=None,
-        vault_kv_mount="kv",
-        vault_base_path="demos",
-        vault_role_id="role",
-        vault_secret_id="secret",
-        hmac_credentials={"canonical/example": "key"},
-        reconcile_interval_seconds=10,
-        request_max_bytes=65536,
-        signature_max_age_seconds=300,
-        rate_limit_per_minute=60,
-        proxy_timeout_seconds=3,
-    )
     app = create_app(settings, store, auth, ReconciliationStub())  # type: ignore[arg-type]
-    body = (
-        '{"repository":"canonical/example","pr":12,"commit_sha":"'
-        + "a" * 40
-        + '","image":"ghcr.io/canonical/example@sha256:'
-        + "b" * 64
-        + '","delivery_id":"delivery-12"}'
-    ).encode()
-    timestamp = str(int(time.time()))
-    canonical = b"\n".join((b"POST", b"/api/v1/deploy", timestamp.encode(), b"delivery-12", body))
-    signature = hmac.new(b"key", canonical, hashlib.sha256).hexdigest()
     with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/deploy",
-            content=body,
-            headers={
-                "content-type": "application/json",
-                "x-demos-repository": "canonical/example",
-                "x-demos-timestamp": timestamp,
-                "x-demos-nonce": "delivery-12",
-                "x-demos-signature": f"sha256={signature}",
-            },
-        )
+        yield client
+
+
+def deploy_payload() -> dict:
+    return {
+        "repository": "canonical/example",
+        "pr": 12,
+        "commit_sha": "a" * 40,
+        "image": f"ghcr.io/canonical/example@sha256:{'b' * 64}",
+        "delivery_id": "delivery-12",
+    }
+
+
+HEADERS = {
+    "Authorization": "Bearer test-token",
+    "X-Demos-Repository": "canonical/example",
+}
+
+
+def test_deploy_retry_and_conflicting_delivery(api_client) -> None:
+    payload = deploy_payload()
+    response = api_client.post("/api/v1/deploy", json=payload, headers=HEADERS)
     assert response.status_code == 202
     assert response.json()["state"] == "pending"
+    retry = api_client.post("/api/v1/deploy", json=payload, headers=HEADERS)
+    assert retry.status_code == 202
+    assert retry.json() == response.json()
+    payload["commit_sha"] = "c" * 40
+    conflict = api_client.post("/api/v1/deploy", json=payload, headers=HEADERS)
+    assert conflict.status_code == 409
+
+
+def test_destroy_retry_and_conflicting_delivery(api_client) -> None:
+    payload = deploy_payload()
+    assert api_client.post("/api/v1/deploy", json=payload, headers=HEADERS).status_code == 202
+    destruction = {
+        "repository": payload["repository"],
+        "pr": payload["pr"],
+        "delivery_id": "destroy-12",
+    }
+    response = api_client.post("/api/v1/destroy", json=destruction, headers=HEADERS)
+    assert response.status_code == 202
+    assert response.json()["state"] == "deleting"
+    retry = api_client.post("/api/v1/destroy", json=destruction, headers=HEADERS)
+    assert retry.status_code == 202
+    assert retry.json() == response.json()
+    # A delivery ID cannot be reused for a different operation on this demo.
+    payload["delivery_id"] = destruction["delivery_id"]
+    assert api_client.post("/api/v1/deploy", json=payload, headers=HEADERS).status_code == 409
+
+
+@pytest.mark.parametrize("operation", ["deploy", "destroy", "status"])
+def test_repository_isolation(api_client, operation: str) -> None:
+    if operation == "status":
+        response = api_client.get("/api/v1/demos/canonical/other/12", headers=HEADERS)
+    else:
+        payload = deploy_payload()
+        payload["repository"] = "canonical/other"
+        payload["image"] = f"ghcr.io/canonical/other@sha256:{'b' * 64}"
+        if operation == "destroy":
+            payload = {key: payload[key] for key in ("repository", "pr", "delivery_id")}
+        response = api_client.post(f"/api/v1/{operation}", json=payload, headers=HEADERS)
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("path", ["/api/v1/deploy", "/api/v1/destroy"])
+def test_missing_token_rejected(api_client, path: str) -> None:
+    response = api_client.post(path, json=deploy_payload())
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_status_requires_token(api_client) -> None:
+    path = "/api/v1/demos/canonical/example/12"
+    assert api_client.get(path).status_code == 401
+    assert (
+        api_client.post("/api/v1/deploy", json=deploy_payload(), headers=HEADERS).status_code == 202
+    )
+    assert api_client.get(path, headers=HEADERS).status_code == 200
+
+
+def test_hmac_headers_are_not_accepted(api_client) -> None:
+    response = api_client.post(
+        "/api/v1/deploy",
+        json=deploy_payload(),
+        headers={
+            "X-Demos-Repository": "canonical/example",
+            "X-Demos-Timestamp": "123",
+            "X-Demos-Nonce": "delivery-12",
+            "X-Demos-Signature": "sha256=obsolete",
+        },
+    )
+    assert response.status_code == 401
+
+
+def test_unauthenticated_health_checks(api_client) -> None:
+    assert api_client.get("/healthz").status_code == 200
+    assert api_client.get("/readyz").status_code == 200

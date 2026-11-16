@@ -39,13 +39,13 @@ permissions:
   pull-requests: write
 jobs:
   demo:
-    uses: canonical/demos-rework/.github/workflows/demo-deploy.yaml@main
+    uses: canonical/demos-controller/.github/workflows/demo-deploy.yaml@main
     with:
       pr-number: ${{ github.event.pull_request.number }}
       commit-sha: ${{ github.event.pull_request.head.sha }}
       api-url: ${{ vars.DEMOS_API_URL }}
     secrets:
-      demos-hmac-key: ${{ secrets.DEMOS_HMAC_KEY }}
+      demos-api-token: ${{ secrets.DEMOS_API_TOKEN }}
 ```
 
 Use a separate closed-event wrapper for cleanup:
@@ -61,12 +61,12 @@ permissions:
   pull-requests: write
 jobs:
   cleanup:
-    uses: canonical/demos-rework/.github/workflows/demo-cleanup.yaml@main
+    uses: canonical/demos-controller/.github/workflows/demo-cleanup.yaml@main
     with:
       pr-number: ${{ github.event.pull_request.number }}
       api-url: ${{ vars.DEMOS_API_URL }}
     secrets:
-      demos-hmac-key: ${{ secrets.DEMOS_HMAC_KEY }}
+      demos-api-token: ${{ secrets.DEMOS_API_TOKEN }}
 ```
 
 Repository secrets are unavailable to pull requests from forks. Those pull

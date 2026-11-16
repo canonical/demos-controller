@@ -81,12 +81,17 @@ def test_configures_workload_and_publishes_api_and_wildcard_route(
         "_secret_content",
         side_effect=[
             {"role-id": "role", "secret-id": "secret"},
-            {"credentials": '{"canonical/example":"hmac-key"}'},
+            {"credentials": '{"canonical/example":"test-token"}'},
         ],
     ):
         harness.container_pebble_ready("controller")
     plan = harness.get_container_pebble_plan("controller")
     assert plan.services["fastapi"].environment["DATABASE_PATH"] == "/data/controller.db"
+    assert json.loads(plan.services["fastapi"].environment["API_TOKENS"]) == {
+        "canonical/example": "test-token"
+    }
+    assert "HMAC_CREDENTIALS" not in plan.services["fastapi"].environment
+    assert "SIGNATURE_MAX_AGE" not in plan.services["fastapi"].environment
     assert plan.services["fastapi"].environment["UVICORN_HOST"] == "0.0.0.0"
     assert plan.services["fastapi"].environment["UVICORN_PORT"] == "8080"
     assert "MAX_DEMO_LIFETIME" not in plan.services["fastapi"].environment
@@ -117,6 +122,34 @@ def test_configures_workload_and_publishes_api_and_wildcard_route(
     assert service.metadata.labels[MANAGED_BY_LABEL] == "demos-controller"
     assert service.metadata.annotations[OWNER_ANNOTATION] == "demos-controller"
     assert isinstance(harness.model.unit.status, ops.ActiveStatus)
+    harness.cleanup()
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        "not-json",
+        "{}",
+        "[]",
+        '{"canonical/example":""}',
+        '{"canonical/example":123}',
+        '{"Canonical/Example":"token"}',
+        '{"canonical/example":"token with spaces"}',
+    ],
+)
+def test_invalid_token_map_blocks_charm(credentials: str) -> None:
+    harness = make_harness()
+    with patch.object(
+        DemosControllerCharm,
+        "_secret_content",
+        side_effect=[
+            {"role-id": "role", "secret-id": "secret"},
+            {"credentials": credentials},
+        ],
+    ):
+        harness.container_pebble_ready("controller")
+    assert isinstance(harness.model.unit.status, ops.BlockedStatus)
+    assert "API token" in harness.model.unit.status.message
     harness.cleanup()
 
 
